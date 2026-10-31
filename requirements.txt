@@ -1,4 +1,4 @@
-# Python 3.11 is recommended. Runtime model downloads need Internet access.
+# Python 3.11; detector models downloaded at runtime / prewarm.
 numpy>=1.26,<3
 Pillow>=10,<13
 opencv-python-headless>=4.10,<5
@@ -9,3 +9,5 @@ paddleocr>=3.6,<3.8
 fastapi>=0.115,<1
 uvicorn>=0.30,<1
 python-multipart>=0.0.9,<1
+boto3>=1.35,<2
+httpx>=0.27,<1
