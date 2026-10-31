@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+output/
+samples/
+models/
+yolo11n.pt
+*.onnx
+*.pth
+.DS_Store
+.env

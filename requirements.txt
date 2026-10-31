@@ -1,0 +1,11 @@
+# Python 3.11 is recommended. Runtime model downloads need Internet access.
+numpy>=1.26,<3
+Pillow>=10,<13
+opencv-python-headless>=4.10,<5
+huggingface-hub>=0.29,<2
+onnxruntime>=1.19,<2
+ultralytics>=8.3,<9
+paddleocr>=3.6,<3.8
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+python-multipart>=0.0.9,<1
