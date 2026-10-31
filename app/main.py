@@ -14,6 +14,7 @@ from fastapi.responses import Response
 from app.detectors import ModelService
 from app.image_ops import decode_image, encode_jpg
 from app.pipeline import Pipeline
+from app.routers import blur_images
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 app = FastAPI(title="DeepFence Blur & Text Replacement API", version="1.0.0")
@@ -28,6 +29,9 @@ def authorize(x_api_key: str | None = Header(default=None)) -> None:
     expected = os.getenv("BLUR_API_KEY", "").strip()
     if expected and not hmac.compare_digest(x_api_key or "", expected):
         raise HTTPException(status_code=401, detail="Invalid X-API-Key")
+
+
+app.include_router(blur_images.router, dependencies=[Depends(authorize)])
 
 
 def run_file(file: UploadFile, text_mode: str):

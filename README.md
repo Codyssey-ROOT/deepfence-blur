@@ -28,7 +28,7 @@ DeepFence **이미지 탐지 및 치환용 CPU FastAPI**. 기존 `image-detectio
 권장 Python: **3.11**
 
 ```bash
-cd deepfence-blur-fastapi
+cd deepfence-blur
 python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
@@ -47,7 +47,9 @@ python -m app.cli --input samples/example.jpg --output output/processed.jpg --te
 # 원래 블러 방식과 비교
 python -m app.cli --input samples/example.jpg --output output/blur.jpg --text-mode blur
 
-# API 실행
+# API 실행 (S3 API를 쓰려면 .env에 S3_BUCKET, CDN_BASE_URL 등을 채운 뒤)
+cp -n .env.example .env   # 이미 .env가 있으면 덮어쓰지 않음
+set -a; source .env; set +a
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -94,6 +96,58 @@ curl -H 'X-API-Key: 비밀키' \
   -F "file=@samples/example.jpg" \
   'http://localhost:8000/process/image' --output result.jpg
 ```
+
+## 2-1. S3 연동 API (`/blur/images/*`)
+
+Spring 백엔드가 사용하는 흐름입니다. 클라이언트가 원본을 S3에 **직접 PUT**하고 Blur 서버는 완료 알림만 받습니다.
+
+1. `POST /blur/images/presigned-url`에서 Presigned PUT URL과 `objectKey`를 발급받습니다.
+2. 클라이언트가 `uploadUrl`로 원본을 PUT합니다. **`Content-Type`과 `Content-Length`가 발급 요청 값과 같아야 합니다**(서명에 포함됨).
+3. `POST /blur/images/complete`가 객체를 확인하고 즉시 200을 반환합니다. 처리는 백그라운드에서 진행되고, 결과 JPEG는 `{S3_KEY_PREFIX}/results/{원본 uuid}.jpg`에 저장됩니다.
+
+`BLUR_API_KEY`가 설정되어 있으면 두 API 모두 `X-API-Key` 헤더가 필요합니다.
+
+공통 응답 형식:
+
+- 성공: `{"statusCode": 200, "message": "OK", "data": {...}}` (complete는 `data`가 없습니다.)
+- 에러: `{"statusCode": <코드>, "message": "<사유>"}`. 400(파라미터 누락·형식 오류), 401(인증), 404(객체 없음), 500(서버 오류). 기존 `/process*` API의 에러 형식(`{"detail": ...}`)은 바뀌지 않습니다.
+
+| 규칙 | 값 |
+|---|---|
+| 허용 형식 | `image/png` ↔ `png`, `image/jpeg` ↔ `jpg`/`jpeg` (그 외와 불일치는 400) |
+| 파일 크기 | 1 이상 `MAX_FILE_SIZE_BYTES` 이하 |
+| objectKey | 서버 생성, `{S3_KEY_PREFIX}/{uuid4}.{fileExt}` |
+| complete 키 검사 | 빈 값, `{S3_KEY_PREFIX}/`로 시작하지 않는 키, `..`를 포함한 키는 400 |
+
+```bash
+# 1) Presigned URL 발급
+curl -s -X POST http://localhost:8000/blur/images/presigned-url \
+  -H 'Content-Type: application/json' -H 'X-API-Key: 비밀키' \
+  -d '{"contentType":"image/jpeg","fileExt":"jpg","fileSize":245760}'
+# {"statusCode":200,"message":"OK","data":{"uploadUrl":"https://...","objectKey":"images/blur/<uuid>.jpg","publicUrl":"https://cdn.example.com/images/blur/<uuid>.jpg"}}
+
+# 2) 원본 업로드 (헤더가 서명 값과 일치해야 함)
+curl -X PUT "<uploadUrl>" -H 'Content-Type: image/jpeg' --data-binary @photo.jpg
+
+# 3) 처리 요청
+curl -s -X POST http://localhost:8000/blur/images/complete \
+  -H 'Content-Type: application/json' -H 'X-API-Key: 비밀키' \
+  -d '{"objectKey":"images/blur/<uuid>.jpg"}'
+# {"statusCode":200,"message":"OK"}
+```
+
+### 신규 환경변수
+
+| 이름 | 기본값 | 설명 |
+|---|---|---|
+| `AWS_REGION` | (없음) | S3 리전. 예: `ap-northeast-2` |
+| `S3_BUCKET` | (필수) | 원본과 결과를 저장할 버킷 |
+| `CDN_BASE_URL` | (필수) | `publicUrl = CDN_BASE_URL + "/" + objectKey` |
+| `PRESIGNED_EXPIRES_SECONDS` | `300` | Presigned URL 유효 시간(초) |
+| `MAX_FILE_SIZE_BYTES` | `12582912` | 업로드 최대 크기(기존 12MB와 동일) |
+| `S3_KEY_PREFIX` | `images/blur` | 객체 키 접두사 |
+
+AWS 자격 증명은 코드나 `.env`에 넣지 않습니다. EC2에서는 IAM Role을, 로컬에서는 `~/.aws` 프로필이나 표준 AWS 환경변수를 사용합니다. 서버 IAM에 필요한 권한은 `s3:PutObject`(Presigned 서명, 결과 업로드), `s3:GetObject`(head·원본 읽기), `s3:ListBucket`입니다. `s3:ListBucket`이 없으면 존재하지 않는 객체에 대해 S3가 404 대신 403을 반환하고, 이 경우 API는 500으로 응답합니다.
 
 ## 3. AWS Blur EC2에 Docker Hub 이미지로 배포
 
@@ -165,15 +219,20 @@ volumes:
 ## 4. 구성 파일
 
 ```
-deepfence-blur-fastapi/
+deepfence-blur/
 ├── Dockerfile
 ├── compose.yaml
 ├── .dockerignore
 ├── .env.example
 ├── requirements.txt
+├── requirements-dev.txt # 테스트 의존성 (pytest, httpx, moto)
 ├── README.md
 ├── app/
 │   ├── main.py         # REST API
+│   ├── routers/
+│   │   └── blur_images.py # S3 Presigned 업로드 / 완료 처리 API
+│   ├── s3.py           # boto3 S3 래퍼
+│   ├── schemas.py      # /blur/images 요청·응답 모델
 │   ├── detectors.py    # 모델 로딩 + 객체 탐지 + 한국어 인식
 │   ├── geometry.py     # 좌표 및 탐지 자료형
 │   ├── text_replace.py # 유사 글자 생성, inpaint, 한글 합성
@@ -193,15 +252,38 @@ deepfence-blur-fastapi/
 - 강한 비식별화가 필요한 문서는 불투명 마스킹과 사람 검수를 사용하세요.
 - 입력 이미지는 최대 12MB / 25MP, JPEG·PNG·WebP 지원. EXIF 방향 보정 후 처리하고 결과 JPEG에는 원본 EXIF를 포함하지 않습니다.
 - 모델 최초 다운로드 시 Docker Hub/Hugging Face 네트워크 접근이 필요합니다. 공개 저장소에서 가져오는 번호판 모델의 `rtmdet_onnx.py`는 **실행 가능한 타사 코드**이므로 배포 전 출처 및 해시를 고정해 검토해야 합니다.
-- Ultralytics YOLO11 라이선스(AGPL 또는 상용) 및 각 모델 라이선스를 별도로 확인하세요.
+- **주의: Ultralytics YOLO11 라이선스(AGPL 또는 상용) 및 각 모델 라이선스를 별도로 확인하세요.** 서비스 배포 전 검토가 필요합니다.
 - 모델 전체의 실제 추론과 EC2 상 Docker 빌드는 이 배포 ZIP을 만드는 환경에서 실행하지 않았습니다. 기본 단위/API 통합 테스트는 **학습된 가중치 없이** 실행합니다.
 
 ## 6. 단위 테스트
 
 ```bash
-python -m pip install pytest httpx
+python -m pip install -r requirements-dev.txt
 pytest -q
 ```
+
+모델 가중치 없이 실행됩니다. S3는 `moto`로 모킹하므로 AWS 계정이나 네트워크가 필요 없습니다.
+
+빠르게 테스트만 돌리려면 무거운 모델 패키지(ultralytics, paddleocr 등)를 빼고 설치해도 됩니다. 모델 패키지는 실제 추론 시점에만 import됩니다.
+
+```bash
+python -m pip install numpy Pillow opencv-python-headless fastapi python-multipart boto3 pytest httpx "moto[s3]"
+```
+
+## 7. 미확정 항목 (Spring 백엔드와 협의 필요)
+
+코드에서는 `# TODO(spec):` 주석으로 표시되어 있습니다.
+
+- **에러 응답 본문 형식**: 명세가 비어 있어 `{"statusCode", "message"}`로 통일했습니다. (`app/schemas.py`)
+- **완료 통지 방식**: 콜백 URL, payload(`userId`, 결과 키, 성공/실패 상태)가 정해지지 않았습니다. `CompletionNotifier` 인터페이스만 있고 호출하지 않습니다. (`app/routers/blur_images.py`)
+- **원본 읽기 방식**: 현재는 서버 IAM 권한으로 S3 `get_object`를 호출합니다(`S3OriginalReader`). Spring이 발급하는 Presigned GET으로 바꿀지 결정이 필요합니다.
+- **원본 읽기용 Presigned GET 발급 API**: 구현하지 않았습니다.
+- **인증 헤더 규격**: 기존 `X-API-Key`(`BLUR_API_KEY`)를 그대로 사용합니다.
+- **403 사용처**: 권한 규칙이 정해지지 않아 현재 403을 반환하는 경우가 없습니다.
+- **complete의 objectKey 검사 범위**: 명세 규칙(접두사, `..`)만 적용합니다. `{prefix}/results/` 아래 키나 `{prefix}/{uuid}.{ext}` 형태가 아닌 키도 통과합니다.
+- **결과 처리 모드**: 백그라운드 처리는 서버 기본 `TEXT_MODE`를 사용합니다. 요청별 지정은 명세에 없습니다.
+- **처리 실패 시 동작**: 로그(객체 키와 예외 타입)에만 남기고 재시도하지 않습니다. 결과 객체가 생기지 않습니다.
+- 번호판 모델 `rtmdet_onnx.py` 해시 고정과 Ultralytics(AGPL) 라이선스 검토는 5절 주의사항 참고.
 
 ## 문서/모델 출처
 
