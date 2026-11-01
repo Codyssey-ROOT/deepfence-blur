@@ -1,5 +1,36 @@
 # DeepFence — S3-driven Blur FastAPI
 
+사진 속에서 **나를 특정할 수 있는 단서(차량 번호판, 글자·간판·신분증 등)를 찾아 자동으로 블러 처리**하는 DeepFence의 개인정보 보호 서버입니다.
+
+사용자가 사진을 올리면 API 서버(Spring)가 이 서버에 처리를 요청하고, 블러 처리된 이미지는 다시 S3에 저장되어 다음 단계인 [FaceShield](https://github.com/Codyssey-ROOT/deepfence-faceshield)로 넘어갑니다.
+
+- 서비스 전체 소개: [Codyssey-ROOT](https://github.com/Codyssey-ROOT)
+
+## 기술 개요
+
+```
+원본 이미지 → 객체 탐지(사람·얼굴·번호판·글자) → 번호판·글자 영역 블러 → 결과 업로드
+```
+
+| 단계 | 방식 |
+| --- | --- |
+| 탐지 | 사람(YOLO11n), 얼굴(LibreFaceRec), 한국 번호판(RTMDet), 글자 영역(PP-OCRv5 Mobile Detection) 모델을 CPU ONNX 환경에서 실행 |
+| 블러 | 번호판과 글자 영역만 블러 처리하고, 사람과 얼굴은 위치만 탐지 (얼굴은 FaceShield 단계에서 보호) |
+| 처리 방식 | 원본 다운로드 성공 즉시 응답하고, 탐지·블러·업로드는 백그라운드에서 수행 |
+| 연동 | S3에서 원본을 받고, Spring이 발급한 Presigned URL로 결과를 업로드 |
+
+## 기술 스택
+
+| 구분 | 기술 |
+| --- | --- |
+| 언어 | Python 3.11 |
+| 서버 | FastAPI, Uvicorn |
+| 모델 실행 | ONNX Runtime, Ultralytics, PaddleOCR |
+| 이미지 처리 | OpenCV, Pillow, NumPy |
+| 모델 다운로드 | Hugging Face Hub |
+| 외부 연동 | boto3 (S3), httpx (Spring API) |
+| 인프라 | Docker, Docker Compose |
+
 ## API
 
 ### POST /process
@@ -114,3 +145,16 @@ Spring에 실패 상태를 통보하지 않습니다.
 
 CPU 모델 추론은 내부 락으로 보호됩니다.
 초기에는 Uvicorn worker 1개를 권장합니다.
+
+## 외부 자원 활용 내역
+
+| 구분 | 명칭 | 용도 | 라이선스 |
+| --- | --- | --- | --- |
+| 오픈소스 | FastAPI, Uvicorn | API 서버 | MIT / BSD-3-Clause |
+| 오픈소스 | OpenCV, NumPy, Pillow | 이미지 처리 | Apache 2.0 / BSD-3-Clause / HPND |
+| 오픈소스 | ONNX Runtime | 모델 추론 | MIT |
+| 오픈소스 | PaddleOCR (PP-OCRv5 Mobile Detection) | 글자 영역 탐지 | Apache 2.0 |
+| 오픈소스 | Ultralytics (YOLO11n) | 사람 탐지 | AGPL-3.0 |
+| 사전 학습 모델 | LibreFaceRec (`LibreYOLO/librefacerec-det`) | 얼굴 탐지 | 모델 저장소 라이선스 참고 |
+| 사전 학습 모델 | 한국 번호판 RTMDet (`miraclenote78/kr-plate-detector`) | 번호판 탐지 | 모델 저장소 라이선스 참고 |
+| 외부 서비스 | AWS S3 | 원본 다운로드, 결과 업로드 | 상용 |
